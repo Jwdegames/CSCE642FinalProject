@@ -4,3 +4,5 @@ venv/
 env/
 ENV/
 VENV/
+chromedata
+chromedata/
