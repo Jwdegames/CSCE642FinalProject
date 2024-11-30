@@ -7,7 +7,10 @@ import gym
 import math
 import os.path
 
-env = DerkEnv()
+env = DerkEnv(n_arenas=4, reward_function={"damageEnemyUnit": 1, "damageEnemyStatue": 2, "killEnemyStatue": 4, 
+                                           "killEnemyUnit": 1, "healFriendlyStatue": 1, "healTeammate1": 1, "healTeammate2": 1,
+                                           "timeSpentHomeBase": -1, "timeSpentHomeTerritory": -1, "timeSpentAwayTerritory": 1, "timeSpentAwayBase": 1,
+                                           "damageTaken": -1, "friendlyFire": -2, "healEnemy": -2, "fallDamageTaken": -1, "statueDamageTaken": -1, "timeScaling": 0.9}, turbo_mode=True)
 
 class Network:
   def __init__(self, weights=None, biases=None):
@@ -49,13 +52,17 @@ biases = np.load('biases.npy') if os.path.isfile('biases.npy') else None
 networks = [Network(weights, biases) for i in range(env.n_agents)]
 
 for e in range(10):
+  env.mode = "train"
+  print(env.mode)
   observation_n = env.reset()
   while True:
     action_n = [networks[i].forward(observation_n[i]) for i in range(env.n_agents)]
     observation_n, reward_n, done_n, info = env.step(action_n)
     if all(done_n):
-        print("Episode finished")
+        print("Episode {e} finished")
         break
+
+  print(env.episode_stats)      
   if env.mode == 'train':
     reward_n = env.total_reward
     print(reward_n)

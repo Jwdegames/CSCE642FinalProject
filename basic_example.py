@@ -12,4 +12,6 @@ for t in range(3):
     if all(done_n):
       print("Episode finished")
       break
+  print(env.episode_stats)      
 env.close()
+
