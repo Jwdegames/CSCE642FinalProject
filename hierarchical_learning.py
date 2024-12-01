@@ -167,7 +167,7 @@ class HierarchicalA2CSolver:
     def get_action(self, observations):
         """Gets an action by getting both macro and micro action"""
         macro_action =  self.select_macro_action(observations)
-        micro_action = self.select_micro_action(torch.cat((observations, torch.as_tensor([macro_actions[0]]).to(cuda_device))))
+        micro_action = self.select_micro_action(torch.cat((observations, torch.as_tensor([macro_action[0]]).to(cuda_device))))
         action = micro_action[0] + (macro_action[0],)
         self.macro_probability = macro_action[1]
         self.macro_value = macro_action[2]
@@ -273,10 +273,6 @@ for e in range(100):
 
     while True:
         appended_actions = []
-        # Select macro action
-        macro_actions = [networks[i].select_macro_action(observation_tensor[i]) for i in range(num_networks)]
-        # Select micro action
-        micro_actions = [networks[i].select_micro_action(torch.cat((observation_tensor[i], torch.as_tensor([macro_actions[i][0]]).to(cuda_device)))) for i in range(num_networks)]
         # Set the action to send to the environment
         actions = [networks[i].get_action(observation_tensor[i]) for i in range(num_networks)]
         # Run the action
@@ -290,7 +286,7 @@ for e in range(100):
                     macro_probability_value_pair = networks[i].select_macro_action(observation_tensor[i])
                     micro_probability_value_pair = networks[i].hierarchical_network.micro_network(torch.cat((observation_tensor[i], torch.as_tensor([macro_probability_value_pair[0]]).to(cuda_device))))
                                                 
-                    td_errors = (reward_n[i] - macro_actions[i][2], reward_n[i] - micro_actions[i][2])
+                    td_errors = (reward_n[i] - networks[i].macro_value, reward_n[i] - networks[i].micro_value)
                     
                     batch_terminal = all(done_n)
                     if not batch_terminal:
@@ -299,10 +295,10 @@ for e in range(100):
                     
                     macro_td_batch_errors[i] = td_errors[0]
                     micro_td_batch_errors[i] = td_errors[1]
-                    batch_macro_probabilities[i] = macro_actions[i][1]  
-                    batch_macro_values[i] = macro_actions[i][2]
-                    batch_micro_probabilities[i] = micro_actions[i][1]
-                    batch_micro_values[i] = micro_actions[i][2]
+                    batch_macro_probabilities[i] = networks[i].macro_probability  
+                    batch_macro_values[i] = networks[i].macro_value
+                    batch_micro_probabilities[i] = networks[i].micro_probability
+                    batch_micro_values[i] = networks[i].micro_value
                     
                     # Update actor critics
                     networks[i].update_macro_actor_critic([macro_td_batch_errors[i]], [batch_macro_probabilities[i]], [batch_macro_values[i]])
