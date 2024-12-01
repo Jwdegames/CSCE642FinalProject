@@ -25,7 +25,18 @@ cuda_device = torch.device("cpu")
 env = DerkEnv(n_arenas=4, reward_function={"damageEnemyUnit": 1, "damageEnemyStatue": 2, "killEnemyStatue": 4, 
                 "killEnemyUnit": 1, "healFriendlyStatue": 1, "healTeammate1": 1, "healTeammate2": 1,
                 "timeSpentHomeBase": -1, "timeSpentHomeTerritory": -1, "timeSpentAwayTerritory": 1, "timeSpentAwayBase": 1,
-                "damageTaken": -1, "friendlyFire": -2, "healEnemy": -2, "fallDamageTaken": -1, "statueDamageTaken": -1, "timeScaling": 0.9}, turbo_mode=True)
+                "damageTaken": -1, "friendlyFire": -2, "healEnemy": -2, "fallDamageTaken": -1, "statueDamageTaken": -1, "timeScaling": 0.9},
+                home_team=[
+                    { 'primaryColor': '#ff0000', 'slots': ['Talons', 'IronBubblegum', 'HeliumBubblegum'], },
+                    { 'primaryColor': '#00ffff', 'slots': ['Pistol', 'ParalyzingDart', 'HealingGland'] },
+                    { 'primaryColor': '#00ff00', 'slots': ['BloodClaws', 'Cripplers', 'FrogLegs']  },
+                ],
+                away_team=[
+                    { 'primaryColor': '#ff0000', 'slots': ['Talons', 'IronBubblegum', 'HeliumBubblegum'], },
+                    { 'primaryColor': '#00ffff', 'slots': ['Pistol', 'ParalyzingDart', 'HealingGland'] },
+                    { 'primaryColor': '#00ff00', 'slots': ['BloodClaws', 'Cripplers', 'FrogLegs']  },
+                ],
+                turbo_mode=True)
 
 class Network(nn.Module):
     def __init__(self, hidden_layer_sizes, mode="MACRO"):
@@ -39,7 +50,11 @@ class Network(nn.Module):
             self.observation_inputs = len(ObservationKeys)
         else:
             # Micro actions are Movex, Rotate, ChaseFocus, CastSlot
-            self.network_outputs = 10
+            # MoveX discrete actions = [-1, 0, 1]
+            # Rotate discrete actions = [-1, -0.5, 0, 0.5, 1]
+            # ChaseFocus discrete actions = [0, 0.5, 1]
+            # CastSlot discrete actions = [0, 1, 2, 3]
+            self.network_outputs = 15
             # self.continuous_network_outputs = 6
             self.observation_inputs = len(ObservationKeys) + 1
         self.layer_sizes = [self.observation_inputs] + hidden_layer_sizes + [self.network_outputs]
@@ -55,9 +70,7 @@ class Network(nn.Module):
         return copy.deepcopy(self)
 
     def forward(self, observations):
-        observation_tensor = torch.as_tensor(observations, dtype=torch.float32)
-        inputs = torch.cat([observation_tensor], dim = -1)
-        inputs = inputs.to(cuda_device)
+        inputs = torch.cat([observations], dim = -1)
         for idx in range(len(self.layers) - 2):
             outputs = F.relu(self.layers[idx](inputs))
             inputs = outputs
@@ -69,16 +82,13 @@ class Network(nn.Module):
             return probabilities, value
         else:
             # Handles MoveX, Rotate, ChaseFocus, and CastSlot
-            # CastSlot is discrete, get action probabilities
-            probabilities = F.softmax(self.layers[-2](outputs)[6:], dim = -1)
-            # Everything else is continuous, get mean and standard deviation
-            sigmoid_indices = torch.LongTensor([0, 2, 4])
-            continuous_mean_values = F.sigmoid(self.layers[-2](outputs)[sigmoid_indices])
-            relu_indices = torch.LongTensor([1, 3, 5])
-            continuous_std_values = torch.add(F.relu(self.layers[-2](outputs)[relu_indices]), 1e-10)
-            continuous_values = torch.cat((continuous_mean_values, continuous_std_values))
+            layer_outputs = self.layers[-2](outputs)
+            probabilities_moveX = F.softmax(layer_outputs[0:3], dim = -1)
+            probabilities_rotate = F.softmax(layer_outputs[3:8], dim = -1)
+            probabilities_chaseFocus = F.softmax(layer_outputs[8:11], dim = -1)
+            probabilities_castSlot = F.softmax(layer_outputs[11:], dim = -1)
             value = self.layers[-1](outputs)
-            return probabilities, continuous_values, value
+            return (probabilities_moveX, probabilities_rotate, probabilities_chaseFocus, probabilities_castSlot), value
 
     def copy_and_mutate(self, network, mr=0.1):
         self.weights = np.add(network.weights, np.random.normal(size=self.weights.shape) * mr)
@@ -123,25 +133,40 @@ class HierarchicalA2CSolver:
     
     def select_micro_action(self, observations):
         """Selects a micro action"""
-        probabilities, continuous_values, value = self.hierarchical_network.micro_network(observations)
-        probabilities_np = probabilities.cpu().detach().numpy()
-        cast_action = np.random.choice(len(probabilities_np), p=probabilities_np)
-        cast_probability = probabilities[cast_action]
-        continuous_values_np = continuous_values.cpu().detach().numpy()
-        # Sigmoid was applied to moveX_mean, rotate_mean -> subtract 0.5 and multiply by 2 to get range of [-1, 1]
-        moveX_mean = (continuous_values_np[0] - 0.5) * 2
-        moveX_std = continuous_values_np[3] 
-        rotate_mean = (continuous_values_np[1] - 0.5) * 2
-        rotate_std = continuous_values_np[4] 
-        chase_mean = continuous_values_np[2]
-        chase_std = continuous_values_np[5] 
-        # Generate normal values
-        values = scipy.stats.norm.rvs(loc=[moveX_mean, rotate_mean, chase_mean], scale=[moveX_std, rotate_std, chase_std])
-        # Calculate probabilities for the normal values
-        probabilities = scipy.stats.norm.pdf(values, [moveX_mean, rotate_mean, chase_mean], [moveX_std, rotate_std, chase_std])
-        joint_probability = cast_probability * probabilities[0] * probabilities[1] * probabilities[2]
-        return (np.clip(values[0], -1, 1), np.clip(values[1], -1, 1), np.clip(values[2], 0, 1), cast_action), joint_probability, value
-        # return (0, 0, 1, cast_action), cast_probability, value
+        probabilities, value = self.hierarchical_network.micro_network(observations)
+        moveX_probabilities_np = probabilities[0].cpu().detach().numpy()
+        moveX_action = np.random.choice(len(moveX_probabilities_np), p=moveX_probabilities_np)
+        moveX_probability = probabilities[0][moveX_action]
+        rotate_probabilities_np = probabilities[1].cpu().detach().numpy()
+        rotate_action = np.random.choice(len(rotate_probabilities_np), p=rotate_probabilities_np)
+        rotate_probability = probabilities[1][rotate_action]
+        chaseFocus_probabilities_np = probabilities[2].cpu().detach().numpy()
+        chaseFocus_action = np.random.choice(len(chaseFocus_probabilities_np), p=chaseFocus_probabilities_np)
+        chaseFocus_probability = probabilities[2][chaseFocus_action]
+        cast_probabilities_np = probabilities[3].cpu().detach().numpy()
+        cast_action = np.random.choice(len(cast_probabilities_np), p=cast_probabilities_np)
+        cast_probability = probabilities[3][cast_action]
+        moveX_dictionary = {
+            0: -1,
+            1: 0,
+            2: 1,
+            3: 0.5,
+            4: 1
+        }
+        rotate_dictionary = {
+            0: -1,
+            1: -0.5,
+            2: 0,
+            3: 0.5,
+            4: 1
+        }
+        chaseFocus_dictionary = {
+            0: 0,
+            1: 0.5,
+            2: 1
+        }
+        joint_probability = moveX_probability * rotate_probability * chaseFocus_probability * cast_probability
+        return (moveX_dictionary[moveX_action], rotate_dictionary[rotate_action], chaseFocus_dictionary[chaseFocus_action], cast_action), joint_probability, value
     
     def actor_loss(self, advantage, probabilities):
         """Calculates actor loss"""
@@ -153,22 +178,36 @@ class HierarchicalA2CSolver:
         loss = advantage * -value
         return loss
     
-    def update_macro_actor_critic(self, advantage, probabilities, value):
+    def update_macro_actor_critic(self, advantages, probabilities, values):
         """Updates optimizer for macro actor critic"""
         # Compute loss
-        actor_loss = self.actor_loss(advantage.detach(), probabilities).mean()
+        advantage = advantages[-1]
+        probability = probabilities[-1]
+        value = values[-1]
+            
+        # print(probability, value)
+        # print(advantage)
+        actor_loss = self.actor_loss(advantage.detach(), probability).mean()
         critic_loss = self.critic_loss(advantage.detach(), value).mean()
         loss = actor_loss + critic_loss
+        # print(actor_loss)
+        # print(critic_loss)
+        # print(loss)
 
         # Update macro actor critic
         self.macro_optimizer.zero_grad()
         loss.backward()
         self.macro_optimizer.step()
         
-    def update_micro_actor_critic(self, advantage, probabilities, value):
+    def update_micro_actor_critic(self, advantages, probabilities, values):
         """Updates optimizer for macro actor critic"""
         # Compute loss
-        actor_loss = self.actor_loss(advantage.detach(), probabilities).mean()
+        advantage = advantages[-1]
+        probability = probabilities[-1]
+        value = values[-1]
+            
+        # print("Advantage:", advantage)
+        actor_loss = self.actor_loss(advantage.detach(), probability).mean()
         critic_loss = self.critic_loss(advantage.detach(), value).mean()
         loss = actor_loss + critic_loss
 
@@ -180,13 +219,15 @@ class HierarchicalA2CSolver:
 
         
 
-    
-hidden_layer_sizes = [16, 16]
+batch_size = 16
+hidden_layer_sizes = [32, 16, 16]
 hidden_layer_string = f"{hidden_layer_sizes[0]}"
 for i in range(1, len(hidden_layer_sizes)):
     hidden_layer_string += f"_{hidden_layer_sizes[i]}"
 macro_model_exists = f'weights/macro_hierarchical_a2c_{hidden_layer_string}.pt' if os.path.isfile(f'weights/macro_hierarchical_a2c_{hidden_layer_string}.pt') else None
 micro_model_exists = f'weights/micro_hierarchical_a2c_{hidden_layer_string}.pt' if os.path.isfile(f'weights/micro_hierarchical_a2c_{hidden_layer_string}.pt') else None
+macro_model_exists = None
+micro_model_exists = None
 if macro_model_exists == None:
     macro_networks = [Network(hidden_layer_sizes, mode="MACRO") for i in range(env.n_agents)] 
 else:
@@ -198,9 +239,9 @@ else:
 networks = [HierarchicalA2CSolver(hidden_layer_sizes, hidden_layer_sizes, cloning=True, macro_network=macro_networks[i], micro_network=micro_networks[i]) for i in range(env.n_agents)] 
 
 
-# for network in networks:
-#     network.hierarchical_network.macro_network = network.hierarchical_network.macro_network.to(cuda_device)
-#     network.hierarchical_network.micro_network = network.hierarchical_network.micro_network.to(cuda_device)
+for network in networks:
+    network.hierarchical_network.macro_network = network.hierarchical_network.macro_network.to(cuda_device)
+    network.hierarchical_network.micro_network = network.hierarchical_network.micro_network.to(cuda_device)
 gamma = 0.9
 previous_top_network = None
 previous_top_reward = None
@@ -208,69 +249,70 @@ reward_n = None
 
 for e in range(100):
     # env.mode = "train"
-    print(env.mode)
     observation_n = env.reset()
+    observation_tensor = torch.as_tensor(observation_n, dtype=torch.float32)
+    observation_tensor = observation_tensor.to(cuda_device)
     num_networks = len(networks)
     probability_value_pairs = None
+    macro_td_batch_errors = [[0] * batch_size for i in range(num_networks)]
+    # print(macro_td_batch_errors)
+    micro_td_batch_errors = [[0] * batch_size for i in range(num_networks)]
+    batch_macro_probabilities = [[0] * batch_size for i in range(num_networks)]
+    batch_macro_values = [[0] * batch_size for i in range(num_networks)]
+    batch_micro_probabilities = [[0] * batch_size for i in range(num_networks)]
+    batch_micro_values = [[0] * batch_size for i in range(num_networks)]
+    batch_idx = 0
+
     while True:
         appended_actions = []
         # Select macro action
-        macro_actions = [networks[i].select_macro_action(observation_n[i]) for i in range(num_networks)]
+        macro_actions = [networks[i].select_macro_action(observation_tensor[i]) for i in range(num_networks)]
         # Select micro action
-        micro_actions = [networks[i].select_micro_action(np.append(observation_n[i], macro_actions[i][0])) for i in range(num_networks)]
+        micro_actions = [networks[i].select_micro_action(torch.cat((observation_tensor[i], torch.as_tensor([macro_actions[i][0]]).to(cuda_device)))) for i in range(num_networks)]
         # Set the action to send to the environment
-        # print(micro_actions[0][0])
-        # print(macro_actions[0][0])
         actions = [micro_actions[i][0] + (macro_actions[i][0], ) for i in range(num_networks)]
         # Run the action
         observation_n, reward_n, done_n, info = env.step(actions)
-        # Compute the TD Error
+        observation_tensor = torch.as_tensor(observation_n, dtype=torch.float32)
+        observation_tensor = observation_tensor.to(cuda_device)
         for i in range(num_networks):
-            probability_value_pair = (networks[i].hierarchical_network.macro_network(observation_n[i]),
-                                        networks[i].hierarchical_network.micro_network(np.append(observation_n[i], macro_actions[i][0])))
+            macro_probability_value_pair = networks[i].select_macro_action(observation_tensor[i])
+            micro_probability_value_pair = networks[i].hierarchical_network.micro_network(torch.cat((observation_tensor[i], torch.as_tensor([macro_probability_value_pair[0]]).to(cuda_device))))
+                                        
             td_errors = (reward_n[i] - macro_actions[i][2], reward_n[i] - micro_actions[i][2])
             
-            terminal = all(done_n)
-            if not terminal:
+            batch_terminal = all(done_n)
+            if not batch_terminal:
                 # Update td error if not terminal
-                td_errors = (td_errors[0] + gamma * probability_value_pair[0][1], td_errors[1] + gamma * probability_value_pair[1][2])
-            # Update actor critics
-            networks[i].update_macro_actor_critic(td_errors[0], macro_actions[i][1], macro_actions[i][2])
-            networks[i].update_micro_actor_critic(td_errors[1], micro_actions[i][1], micro_actions[i][2])
+                td_errors = (td_errors[0] + gamma * macro_probability_value_pair[2], td_errors[1] + gamma * micro_probability_value_pair[1])
+            macro_td_batch_errors[i][batch_idx] = td_errors[0]
+            micro_td_batch_errors[i][batch_idx] = td_errors[1]
+            batch_macro_probabilities[i][batch_idx] = macro_actions[i][1]  
+            batch_macro_values[i][batch_idx] = macro_actions[i][2]
+            batch_micro_probabilities[i][batch_idx] = micro_actions[i][1]
+            batch_micro_values[i][batch_idx] = micro_actions[i][2]
+        batch_idx += 1
+        if batch_idx == batch_size:
+            batch_idx = 0
+            # Calculate TD Error for the batch
+            for i in range(num_networks):
+                # Find probabilites and values
+                # print(batch_trajectory)
+                # Update actor critics
+                # print(f"Updating actor critic for network {i}")
+                networks[i].update_macro_actor_critic(macro_td_batch_errors[i], batch_macro_probabilities[i], batch_macro_values[i])
+                networks[i].update_micro_actor_critic(micro_td_batch_errors[i], batch_micro_probabilities[i], batch_micro_values[i])
+            macro_td_batch_errors = [[0] * batch_size for i in range(num_networks)]
+            micro_td_batch_errors = [[0] * batch_size for i in range(num_networks)]
+            batch_macro_probabilities = [[0] * batch_size for i in range(num_networks)]
+            batch_macro_values = [[0] * batch_size for i in range(num_networks)]
+            batch_micro_probabilities = [[0] * batch_size for i in range(num_networks)]
+            batch_micro_values = [[0] * batch_size for i in range(num_networks)]
+        terminal = all(done_n)
         if terminal:
             print(f"Episode {e} finished")
             break
-
-    print(env.episode_stats)      
-    if env.mode == 'train':
-        # Update other networks based on best one
-        reward_n = env.total_reward
-        top_network_i = np.argmax(reward_n)
-        top_network = networks[top_network_i].clone()
-        print('Current Episode Top Reward', reward_n[top_network_i])
-        # Determine if this network or the previous top one is the best network
-        if previous_top_reward != None:
-            if previous_top_reward > reward_n[top_network_i]:
-                top_network = previous_top_network
-                print("Top reward is still", previous_top_reward)
-            else:
-                previous_top_reward = reward_n[top_network_i]
-                previous_top_network = top_network
-                print("This is the new top reward")
-        else:
-            previous_top_reward = reward_n[top_network_i]
-            previous_top_network = top_network
-            print("This is the first top reward")
-            
-        # Copy and mutate the networks to be based off othe top one
-        for network in networks:
-            network.copy_and_mutate(top_network)
-
-        # Save the weights of the top network
-        np.save('weights/macro_weights.npy', top_network.macro_network.weights)
-        np.save('weights/macro_biases.npy', top_network.macro_network.biases)
-        np.save('weights/micro_weights.npy', top_network.micro_network.weights)
-        np.save('weights/micro_biases.npy', top_network.micro_network.biases)
+    print(env.episode_stats)
         
 # Save the best network
 reward_n = env.total_reward
