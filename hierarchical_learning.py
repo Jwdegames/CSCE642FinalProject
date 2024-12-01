@@ -89,10 +89,6 @@ class Network(nn.Module):
             probabilities_castSlot = F.softmax(layer_outputs[11:], dim = -1)
             value = self.layers[-1](outputs)
             return (probabilities_moveX, probabilities_rotate, probabilities_chaseFocus, probabilities_castSlot), value
-
-    def copy_and_mutate(self, network, mr=0.1):
-        self.weights = np.add(network.weights, np.random.normal(size=self.weights.shape) * mr)
-        self.biases = np.add(network.biases, np.random.normal(size=self.biases.shape) * mr)
         
 class HierarchicalNetwork:
     def __init__(self, macro_hidden_layer_sizes, micro_hidden_layer_sizes, cloning=False, macro_network=None, micro_network=None):
@@ -168,6 +164,17 @@ class HierarchicalA2CSolver:
         joint_probability = moveX_probability * rotate_probability * chaseFocus_probability * cast_probability
         return (moveX_dictionary[moveX_action], rotate_dictionary[rotate_action], chaseFocus_dictionary[chaseFocus_action], cast_action), joint_probability, value
     
+    def get_action(self, observations):
+        """Gets an action by getting both macro and micro action"""
+        macro_action =  self.select_macro_action(observations)
+        micro_action = self.select_micro_action(torch.cat((observations, torch.as_tensor([macro_actions[0]]).to(cuda_device))))
+        action = micro_action[0] + (macro_action[0],)
+        self.macro_probability = macro_action[1]
+        self.macro_value = macro_action[2]
+        self.micro_probability = micro_action[1]
+        self.micro_value = micro_action[2]
+        return action
+        
     def actor_loss(self, advantage, probabilities):
         """Calculates actor loss"""
         loss = advantage * -torch.log(probabilities)
@@ -187,6 +194,7 @@ class HierarchicalA2CSolver:
             
         # print(probability, value)
         # print(advantage)
+        # print(advantages)
         actor_loss = self.actor_loss(advantage.detach(), probability).mean()
         critic_loss = self.critic_loss(advantage.detach(), value).mean()
         loss = actor_loss + critic_loss
@@ -254,13 +262,13 @@ for e in range(100):
     observation_tensor = observation_tensor.to(cuda_device)
     num_networks = len(networks)
     probability_value_pairs = None
-    macro_td_batch_errors = [[0] * batch_size for i in range(num_networks)]
+    macro_td_batch_errors = [0] * num_networks
     # print(macro_td_batch_errors)
-    micro_td_batch_errors = [[0] * batch_size for i in range(num_networks)]
-    batch_macro_probabilities = [[0] * batch_size for i in range(num_networks)]
-    batch_macro_values = [[0] * batch_size for i in range(num_networks)]
-    batch_micro_probabilities = [[0] * batch_size for i in range(num_networks)]
-    batch_micro_values = [[0] * batch_size for i in range(num_networks)]
+    micro_td_batch_errors = [0] * num_networks
+    batch_macro_probabilities = [0] * num_networks
+    batch_macro_values = [0] * num_networks
+    batch_micro_probabilities = [0] * num_networks
+    batch_micro_values = [0] * num_networks
     batch_idx = 0
 
     while True:
@@ -270,44 +278,43 @@ for e in range(100):
         # Select micro action
         micro_actions = [networks[i].select_micro_action(torch.cat((observation_tensor[i], torch.as_tensor([macro_actions[i][0]]).to(cuda_device)))) for i in range(num_networks)]
         # Set the action to send to the environment
-        actions = [micro_actions[i][0] + (macro_actions[i][0], ) for i in range(num_networks)]
+        actions = [networks[i].get_action(observation_tensor[i]) for i in range(num_networks)]
         # Run the action
         observation_n, reward_n, done_n, info = env.step(actions)
         observation_tensor = torch.as_tensor(observation_n, dtype=torch.float32)
         observation_tensor = observation_tensor.to(cuda_device)
-        for i in range(num_networks):
-            macro_probability_value_pair = networks[i].select_macro_action(observation_tensor[i])
-            micro_probability_value_pair = networks[i].hierarchical_network.micro_network(torch.cat((observation_tensor[i], torch.as_tensor([macro_probability_value_pair[0]]).to(cuda_device))))
-                                        
-            td_errors = (reward_n[i] - macro_actions[i][2], reward_n[i] - micro_actions[i][2])
-            
-            batch_terminal = all(done_n)
-            if not batch_terminal:
-                # Update td error if not terminal
-                td_errors = (td_errors[0] + gamma * macro_probability_value_pair[2], td_errors[1] + gamma * micro_probability_value_pair[1])
-            macro_td_batch_errors[i][batch_idx] = td_errors[0]
-            micro_td_batch_errors[i][batch_idx] = td_errors[1]
-            batch_macro_probabilities[i][batch_idx] = macro_actions[i][1]  
-            batch_macro_values[i][batch_idx] = macro_actions[i][2]
-            batch_micro_probabilities[i][batch_idx] = micro_actions[i][1]
-            batch_micro_values[i][batch_idx] = micro_actions[i][2]
         batch_idx += 1
         if batch_idx == batch_size:
-            batch_idx = 0
-            # Calculate TD Error for the batch
             for i in range(num_networks):
-                # Find probabilites and values
-                # print(batch_trajectory)
-                # Update actor critics
-                # print(f"Updating actor critic for network {i}")
-                networks[i].update_macro_actor_critic(macro_td_batch_errors[i], batch_macro_probabilities[i], batch_macro_values[i])
-                networks[i].update_micro_actor_critic(micro_td_batch_errors[i], batch_micro_probabilities[i], batch_micro_values[i])
-            macro_td_batch_errors = [[0] * batch_size for i in range(num_networks)]
-            micro_td_batch_errors = [[0] * batch_size for i in range(num_networks)]
-            batch_macro_probabilities = [[0] * batch_size for i in range(num_networks)]
-            batch_macro_values = [[0] * batch_size for i in range(num_networks)]
-            batch_micro_probabilities = [[0] * batch_size for i in range(num_networks)]
-            batch_micro_values = [[0] * batch_size for i in range(num_networks)]
+                if isinstance(networks[i], HierarchicalA2CSolver):
+                    macro_probability_value_pair = networks[i].select_macro_action(observation_tensor[i])
+                    micro_probability_value_pair = networks[i].hierarchical_network.micro_network(torch.cat((observation_tensor[i], torch.as_tensor([macro_probability_value_pair[0]]).to(cuda_device))))
+                                                
+                    td_errors = (reward_n[i] - macro_actions[i][2], reward_n[i] - micro_actions[i][2])
+                    
+                    batch_terminal = all(done_n)
+                    if not batch_terminal:
+                        # Update td error if not terminal
+                        td_errors = (td_errors[0] + gamma * macro_probability_value_pair[2], td_errors[1] + gamma * micro_probability_value_pair[1])
+                    
+                    macro_td_batch_errors[i] = td_errors[0]
+                    micro_td_batch_errors[i] = td_errors[1]
+                    batch_macro_probabilities[i] = macro_actions[i][1]  
+                    batch_macro_values[i] = macro_actions[i][2]
+                    batch_micro_probabilities[i] = micro_actions[i][1]
+                    batch_micro_values[i] = micro_actions[i][2]
+                    
+                    # Update actor critics
+                    networks[i].update_macro_actor_critic([macro_td_batch_errors[i]], [batch_macro_probabilities[i]], [batch_macro_values[i]])
+                    networks[i].update_micro_actor_critic([micro_td_batch_errors[i]], [batch_micro_probabilities[i]], [batch_micro_values[i]])
+                    # print(macro_td_batch_errors[i])
+                
+            macro_td_batch_errors = [0] * num_networks
+            micro_td_batch_errors = [0] * num_networks
+            batch_macro_probabilities = [0] * num_networks
+            batch_macro_values = [0] * num_networks
+            batch_micro_probabilities = [0] * num_networks
+            batch_micro_values = [0] * num_networks
         terminal = all(done_n)
         if terminal:
             print(f"Episode {e} finished")
