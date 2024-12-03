@@ -8,7 +8,10 @@ A2C code is modified from CSCE 642 A2C Assignment Code
 
 To install: \
 Setup virtual environment if needed \
+Next:
+```
 pip install -r requirements.txt
+```
 
 To run:
 ```
