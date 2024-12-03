@@ -25,7 +25,6 @@ parser.add_argument("-e", "--episodes", help='The number of episodes to run.', r
 parser.add_argument("-s", "--save", help='The number of episodes to save the results and weights after.', required = True)
 
 args = parser.parse_args()
-print(type(args.arenas))
 num_arenas = int(args.arenas)
 num_episodes = int(args.episodes)
 episode_save_batch = int(args.save)
