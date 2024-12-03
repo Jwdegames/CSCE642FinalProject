@@ -1,6 +1,4 @@
-# Example from http://docs.gym.derkgame.com/#installing
-
-
+# Gym Derk imports are from Derk's Gym. See more at http://docs.gym.derkgame.com/. 
 from gym_derk.envs import DerkEnv
 from gym_derk import ObservationKeys
 import numpy as np
@@ -15,9 +13,25 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim import Adam
 from hierarchical_classes import Network, HierarchicalA2CSolver, HierarchicalNetwork
-num_arenas = 5
-num_episodes = 1
-episode_save_batch = 100
+import argparse
+
+
+parser = argparse.ArgumentParser(
+                    prog='MAHRLvsSAHRLDerksGym',
+                    description='This program trains Multi-agent hierarchical reinforcement learning architectures against single-agent hierarchical reinforcement learning architectures',
+                    epilog='Make sure to follow the readme for instructions. Example execution: python hierarchical_learning.py -a 5 -e 6 -s 2')
+parser.add_argument("-a", "--arenas", help='The number of arenas / trials to run in parallel.', required = True)
+parser.add_argument("-e", "--episodes", help='The number of episodes to run.', required = True)
+parser.add_argument("-s", "--save", help='The number of episodes to save the results and weights after.', required = True)
+
+args = parser.parse_args()
+print(type(args.arenas))
+num_arenas = int(args.arenas)
+num_episodes = int(args.episodes)
+episode_save_batch = int(args.save)
+print("Number of arenas:", num_arenas)
+print("Number of episodes:", num_episodes)
+print("Number of episodes before each save:", episode_save_batch)
 start_episode = 0
 env = DerkEnv(n_arenas=num_arenas, reward_function={"damageEnemyUnit": 20, "damageEnemyStatue": 20, "killEnemyStatue": 40, 
                 "killEnemyUnit": 40, "healFriendlyStatue": 20, "healTeammate1": 10, "healTeammate2": 10,
@@ -48,20 +62,6 @@ hidden_layer_sizes = [32, 16, 16]
 hidden_layer_string = f"{hidden_layer_sizes[0]}"
 for i in range(1, len(hidden_layer_sizes)):
     hidden_layer_string += f"_{hidden_layer_sizes[i]}"
-# macro_model_exists = f'weights/macro_hierarchical_a2c_{hidden_layer_string}.pt' if os.path.isfile(f'weights/macro_hierarchical_a2c_{hidden_layer_string}.pt') else None
-# micro_model_exists = f'weights/micro_hierarchical_a2c_{hidden_layer_string}.pt' if os.path.isfile(f'weights/micro_hierarchical_a2c_{hidden_layer_string}.pt') else None
-# macro_model_exists = None
-# micro_model_exists = None
-# if macro_model_exists == None:
-#     macro_networks = [Network(hidden_layer_sizes, mode="MACRO") for i in range(env.n_agents)] 
-# else:
-#     macro_networks = [torch.load(macro_model_exists, weights_only=False) for i in range(env.n_agents)]
-# if micro_model_exists == None:
-#     micro_networks = [Network(hidden_layer_sizes, mode="MICRO") for i in range(env.n_agents)] 
-# else:
-#     micro_networks = [torch.load(micro_model_exists, weights_only=False) for i in range(env.n_agents)]
-# networks = [HierarchicalA2CSolver(hidden_layer_sizes, hidden_layer_sizes, cloning=False, macro_network=macro_networks[i], micro_network=micro_networks[i]) for i in range(env.n_agents)] 
-
 networks = [0] * (num_arenas * 4)
 for i in range(num_arenas):
     for j in range(4):
@@ -74,6 +74,12 @@ for i in range(num_arenas):
         if start_episode != 0: 
             networks[i * 4 + j].hierarchical_network.macro_network = torch.load(f'weights/{num_episodes}_{hidden_layer_string}/macro_hierarchical_a2c_{start_episode}_{hidden_layer_string}_{i * 4 + j}_{network_mode}.pt', weights_only=False)
             networks[i * 4 + j].hierarchical_network.micro_network = torch.load(f'weights/{num_episodes}_{hidden_layer_string}/micro_hierarchical_a2c_{start_episode}_{hidden_layer_string}_{i * 4 + j}_{network_mode}.pt', weights_only=False)
+
+
+if not os.path.isdir(f'weights'):
+    os.mkdir(f'weights')
+if not os.path.isdir(f'results'):
+    os.mkdir(f'results')
 
 if not os.path.isdir(f'weights/{num_episodes}_{hidden_layer_string}'):
     os.mkdir(f'weights/{num_episodes}_{hidden_layer_string}')
@@ -210,14 +216,7 @@ for e in range(start_episode, num_episodes):
             torch.save(networks[i].hierarchical_network.macro_network, f'weights/{num_episodes}_{hidden_layer_string}/macro_hierarchical_a2c_{e+1}_{hidden_layer_string}_{i}_{networks[i].mode}.pt')
             torch.save(networks[i].hierarchical_network.micro_network, f'weights/{num_episodes}_{hidden_layer_string}/micro_hierarchical_a2c_{e+1}_{hidden_layer_string}_{i}_{networks[i].mode}.pt')
         
-# Save stats
-# Save the best network
-# reward_n = env.total_reward
-# top_network_i = np.argmax(reward_n)
-# top_network = networks[top_network_i]
-# print("Top reward was", reward_n[top_network_i], "for network", top_network_i)
-# torch.save(top_network.hierarchical_network.macro_network, f'weights/macro_hierarchical_a2c_{hidden_layer_string}.pt')
-# torch.save(top_network.hierarchical_network.micro_network, f'weights/micro_hierarchical_a2c_{hidden_layer_string}.pt')
+
 env.close()
 # Save the networks
 for i in range(num_networks):

@@ -1,3 +1,14 @@
+# Licensing Information:  You are free to use or extend this codebase for
+# educational purposes provided that (1) you do not distribute or publish
+# solutions, (2) you retain this notice, and (3) inform Guni Sharon at 
+# guni@tamu.edu regarding your usage (relevant statistics is reported to NSF).
+# The development of this assignment was supported by NSF (IIS-2238979).
+# Contributors:
+# The core code was developed by Guni Sharon (guni@tamu.edu).
+# The PyTorch code was developed by Sheelabhadra Dey (sheelabhadra@tamu.edu).
+
+# The HierarchicalA2CSolver is based on the implementation of the CSCE 642 A2CSolver code.
+
 from gym_derk import ObservationKeys
 import numpy as np
 import torch
