@@ -6,3 +6,7 @@ ENV/
 VENV/
 chromedata
 chromedata/
+results
+results/
+weights
+weights/
